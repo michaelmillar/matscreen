@@ -1,0 +1,13 @@
+fields:
+  - material_id
+  - formula_pretty
+  - structure
+  - band_gap
+  - formation_energy_per_atom
+  - energy_above_hull
+  - is_stable
+  - symmetry
+  - density
+
+chunk_size: 1000
+output_path: data/raw/mp_summary.parquet

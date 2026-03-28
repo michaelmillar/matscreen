@@ -1,0 +1,18 @@
+default_objectives:
+  - name: bandgap
+    direction: target_range
+    range: [1.0, 1.5]
+    weight: 1.0
+  - name: formation_energy
+    direction: minimise
+    weight: 0.8
+  - name: uncertainty
+    direction: minimise
+    weight: 0.5
+
+default_filters:
+  max_ehull: 0.1
+  exclude_elements: []
+  max_uncertainty_percentile: 95
+
+default_top_k: 20

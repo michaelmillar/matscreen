@@ -1,0 +1,12 @@
+dataset: dft_3d
+
+fields:
+  - jid
+  - atoms
+  - formation_energy_peratom
+  - optb88vdw_bandgap
+  - mbj_bandgap
+  - bulk_modulus_kv
+  - ehull
+
+output_path: data/raw/jarvis_dft3d.parquet

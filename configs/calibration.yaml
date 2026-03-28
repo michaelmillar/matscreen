@@ -1,0 +1,3 @@
+method: isotonic
+holdout_fraction: 0.2
+confidence_level: 0.9

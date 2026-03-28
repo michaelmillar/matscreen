@@ -19,7 +19,7 @@ MatScreen takes target material properties as input, screens ~230,000 known inor
 
 ## Demo
 
-https://github.com/user-attachments/assets/PLACEHOLDER
+https://github.com/michaelmillar/matscreen/releases/download/v0.1.0/matscreen_demo.mp4
 
 > Select an application (solar cell, LED, thermoelectric), and MatScreen screens 230,000 materials, ranks candidates by suitability, and shows calibrated confidence for every prediction. Green = high confidence. Red = verify with simulation.
 

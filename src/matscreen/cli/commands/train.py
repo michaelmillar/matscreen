@@ -11,6 +11,8 @@ from sklearn.model_selection import train_test_split
 from matscreen.data.cache import load_parquet
 from matscreen.features.composition import CompositionFeaturiser
 from matscreen.models.xgboost_ensemble import XGBoostEnsemble
+from matscreen.uncertainty.calibration import IsotonicCalibrator
+from matscreen.uncertainty.ood import DomainDetector
 
 app = typer.Typer(help="Model training.", no_args_is_help=True)
 console = Console()
@@ -73,12 +75,24 @@ def run(
     ensemble.save(save_path)
     console.print(f"  Model saved to {save_path}")
 
+    console.print("  Fitting calibrator on held-out set...")
+    cal_means, cal_stds = ensemble.predict(X_cal)
+    calibrator = IsotonicCalibrator(confidence_level=0.9)
+    calibrator.fit(cal_means, cal_stds, y_cal)
+    calibrator.save(save_path / "calibrator.json")
+
     np.savez(
         save_path / "calibration_data.npz",
         X_cal=X_cal.values,
         y_cal=y_cal,
         feature_names=X_cal.columns.tolist(),
     )
+
+    console.print("  Fitting OOD detector on training features...")
+    _, train_stds = ensemble.predict(X_train)
+    detector = DomainDetector()
+    detector.fit(X_train.values, train_stds)
+    detector.save(save_path / "ood")
 
     table = Table(title="Training Results")
     table.add_column("Metric")

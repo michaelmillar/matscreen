@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+from pymatgen.core import Composition
 
 from matscreen.data.schema import TriageLabel
 from matscreen.screening.filters import element_filter, stability_filter, uncertainty_filter
@@ -39,6 +40,15 @@ class ScreeningEngine:
         top_k: int = 20,
     ) -> pd.DataFrame:
         filtered = stability_filter(df, max_ehull=max_ehull)
+
+        if excluded_elements and "formula" in filtered.columns and "elements" not in filtered.columns:
+            def _parse_elements(formula):
+                try:
+                    return [str(e) for e in Composition(formula).elements]
+                except Exception:
+                    return []
+            filtered["elements"] = filtered["formula"].apply(_parse_elements)
+
         filtered = element_filter(filtered, excluded=excluded_elements)
         filtered = uncertainty_filter(
             filtered,

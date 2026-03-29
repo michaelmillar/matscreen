@@ -129,7 +129,12 @@ def run_screening(
         "abundance": "abundance_score",
     }
 
-    engine = ScreeningEngine(objectives=objectives, value_columns=value_columns)
+    triage_assigner = TriageAssigner()
+    engine = ScreeningEngine(
+        objectives=objectives,
+        value_columns=value_columns,
+        triage_assigner=triage_assigner,
+    )
     return engine.screen(df, max_ehull=max_ehull, top_k=top_k)
 
 

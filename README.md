@@ -122,11 +122,11 @@ matscreen evaluate run
 ## Limitations
 
 - v1 focuses on solar cell absorbers. Other applications (LED, thermoelectric, wide-gap semiconductor) are planned for later verticals.
-- Band gap predictions use PBE DFT values from training data, which systematically underestimate experimental band gaps by approximately 40 to 50%. The DFT functional is labelled for each prediction.
+- Band gap predictions use PBE DFT values from training data, which systematically underestimate experimental band gaps by approximately 40 to 50%.
 - This is retrieval-based screening over known materials, not generative design of novel structures.
 - Synthesisability is not modelled. TRUST materials still require expert judgement before experimental follow-up.
 - XGBoost on composition features is the v1 model. ALIGNN (graph neural network on crystal structures) is planned for v2 via the existing ForwardModel protocol.
 
 ## Acknowledgements
 
-Built on data from [Materials Project](https://materialsproject.org/) and [JARVIS](https://jarvis.nist.gov/). Benchmarked against [Matbench](https://matbench.materialsproject.org/). Composition features via [matminer](https://hackingmaterials.lbl.gov/matminer/).
+Built on data from [Materials Project](https://materialsproject.org/) and [JARVIS](https://jarvis.nist.gov/). Composition features via [matminer](https://hackingmaterials.lbl.gov/matminer/).

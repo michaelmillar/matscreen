@@ -19,83 +19,76 @@ SCENES = [
     {
         "title": "MatScreen",
         "subtitle": (
-            "Uncertainty-aware materials screening\n"
-            "with calibrated confidence intervals"
+            "Reliability-first triage for solar cell absorber discovery\n"
+            "Don't trust predictions. Triage them."
         ),
         "is_title_card": True,
-        "duration": 8,
+        "duration": 4,
     },
     {
         "annotation": (
-            "Tell the tool what you need.\n"
-            "Select an application like Solar Cell or LED, and it screens 230,000 materials."
+            "Set your target band gap and stability threshold.\n"
+            "MatScreen screens 230,000+ materials for solar absorber candidates."
         ),
         "action": "screenshot",
         "duration": 12,
     },
     {
         "annotation": (
-            "Recommendations tab shows top candidates ranked by overall suitability.\n"
-            "Each material gets a confidence rating: HIGH, MODERATE, or LOW."
+            "Every candidate gets a triage label: TRUST, VERIFY, or DEFER.\n"
+            "TRUST = act on it. VERIFY = run DFT first. DEFER = outside the model's domain."
         ),
         "action": "scroll_to_recommendations",
         "duration": 15,
     },
     {
         "annotation": (
-            "Radar charts show how each material scores across five dimensions.\n"
-            "One glance tells you the tradeoffs."
+            "Radar charts show Shockley-Queisser efficiency, stability,\n"
+            "confidence, element abundance, and mechanical properties."
         ),
         "action": "scroll_more_recs",
         "duration": 15,
     },
     {
         "annotation": (
-            "The Explore tab shows the full property landscape.\n"
-            "Top 5 candidates are labelled. Green region = your target band gap."
+            "Triage Summary shows how many materials fall into each category.\n"
+            "This is where you see the value of reliability-first screening."
         ),
-        "action": "click_explore_tab",
+        "action": "click_triage_tab",
         "duration": 15,
     },
     {
         "annotation": (
-            "Distribution and crystal system charts show\n"
-            "where your candidates sit within the full database."
+            "The Explore tab shows the property landscape.\n"
+            "Points are coloured by triage label. Green = TRUST. Orange = VERIFY. Red = DEFER."
         ),
-        "action": "scroll_explore_charts",
+        "action": "click_explore_tab",
         "duration": 12,
     },
     {
         "annotation": (
-            "The Analysis tab shows model confidence for each prediction.\n"
-            "Green = high confidence. Red = verify with simulation."
+            "Reliability diagram shows calibration quality.\n"
+            "A well-calibrated model tracks the diagonal. Per-family breakdown below."
         ),
-        "action": "click_analysis_tab",
+        "action": "click_reliability_tab",
         "duration": 15,
     },
     {
         "annotation": (
-            "Switch to LED application.\n"
-            "The system re-screens for a completely different band gap range."
+            "DFT Queue: export VERIFY materials directly to your simulation workflow.\n"
+            "Download as CSV. No manual filtering needed."
         ),
-        "action": "switch_to_led",
-        "duration": 15,
-    },
-    {
-        "annotation": (
-            "27 unit tests validate the Pareto sorting, calibration,\n"
-            "data pipeline, and screening logic"
-        ),
-        "is_terminal": True,
-        "duration": 15,
+        "action": "click_dft_tab",
+        "duration": 12,
     },
     {
         "title": "MatScreen",
         "subtitle": (
-            "Ensemble ALIGNN models with calibrated UQ\n"
-            "Multi-objective Pareto screening\n"
-            "Built on Materials Project + JARVIS (230k materials)\n"
-            "Validated on Matbench benchmarks"
+            "XGBoost ensemble with isotonic calibration\n"
+            "OOD detection via Mahalanobis + ensemble disagreement\n"
+            "TRUST / VERIFY / DEFER triage labels\n"
+            "Solar absorbers with SQ efficiency ranking\n"
+            "Built on Materials Project + JARVIS (230k materials)"
         ),
         "is_title_card": True,
         "duration": 12,
@@ -159,47 +152,40 @@ def create_title_card(title: str, subtitle: str, frame_path: Path) -> None:
 def create_terminal_frame(frame_path: Path) -> None:
     img = Image.new("RGB", (WIDTH, HEIGHT), color=(15, 23, 42))
     draw = ImageDraw.Draw(img)
-    font = get_font(24)
-    font_small = get_font_regular(20)
+    font_small = get_font_regular(18)
+
+    test_modules = [
+        ("test_cache", ["save_and_load_roundtrip", "load_nonexistent", "is_stale_nonexistent", "is_stale_fresh"]),
+        ("test_calibration", ["perfect_calibration", "overconfident_correction", "reliability_diagram_shape", "calibrator_save_load", "miscalibration_area_bounds"]),
+        ("test_composition", ["featurise_known_material", "featurise_invalid_formula", "feature_names_length", "featurise_batch_consistency"]),
+        ("test_filters", ["stability_filter", "stability_filter_permissive", "uncertainty_filter", "stability_filter_missing_column"]),
+        ("test_objectives", ["target_range_in_range", "target_range_below", "target_range_above", "minimise", "maximise", "uncertainty_objective"]),
+        ("test_ood", ["mahalanobis_zero_for_mean", "mahalanobis_increases_with_distance", "ood_flag_extreme_point", "in_domain_for_training_point", "save_load_roundtrip"]),
+        ("test_pareto", ["dominates_clear_case", "dominates_partial", "dominates_equal", "non_dominated_sort_simple"]),
+        ("test_roi", ["roi_perfect_triage", "roi_naive_baseline", "roi_all_defer"]),
+        ("test_schema", ["material_record_roundtrip", "property_set_optional_fields", "prediction_with_ci", "material_card", "triage_label_values", "prediction_with_triage", "solar_properties", "material_card_with_solar"]),
+        ("test_solar", ["sq_efficiency_peak", "sq_efficiency_zero_for_metal", "abundance_score_silicon", "contains_toxic_cdte"]),
+        ("test_triage", ["trust_assignment", "verify_assignment", "defer_ood", "defer_high_uncertainty", "summary_counts"]),
+        ("test_xgboost_ensemble", ["train_and_predict_shapes", "ensemble_std_nonzero", "predict_all_shape", "save_and_load_roundtrip", "val_metrics_returned", "name_property"]),
+    ]
 
     lines = [
-        ("$ pytest tests/unit/ -v", (96, 165, 250)),
+        ("$ pytest tests/ -v", (96, 165, 250)),
         ("", (255, 255, 255)),
-        ("tests/unit/test_cache.py::test_save_and_load_roundtrip PASSED", (74, 222, 128)),
-        ("tests/unit/test_cache.py::test_load_nonexistent PASSED", (74, 222, 128)),
-        ("tests/unit/test_cache.py::test_is_stale_nonexistent PASSED", (74, 222, 128)),
-        ("tests/unit/test_cache.py::test_is_stale_fresh PASSED", (74, 222, 128)),
-        ("tests/unit/test_filters.py::test_stability_filter PASSED", (74, 222, 128)),
-        ("tests/unit/test_filters.py::test_stability_filter_permissive PASSED", (74, 222, 128)),
-        ("tests/unit/test_filters.py::test_uncertainty_filter PASSED", (74, 222, 128)),
-        ("tests/unit/test_filters.py::test_stability_filter_missing_column PASSED", (74, 222, 128)),
-        ("tests/unit/test_objectives.py::test_target_range_in_range PASSED", (74, 222, 128)),
-        ("tests/unit/test_objectives.py::test_target_range_below PASSED", (74, 222, 128)),
-        ("tests/unit/test_objectives.py::test_target_range_above PASSED", (74, 222, 128)),
-        ("tests/unit/test_objectives.py::test_minimise PASSED", (74, 222, 128)),
-        ("tests/unit/test_objectives.py::test_maximise PASSED", (74, 222, 128)),
-        ("tests/unit/test_objectives.py::test_uncertainty_objective PASSED", (74, 222, 128)),
-        ("tests/unit/test_pareto.py::test_dominates_clear_case PASSED", (74, 222, 128)),
-        ("tests/unit/test_pareto.py::test_dominates_partial PASSED", (74, 222, 128)),
-        ("tests/unit/test_pareto.py::test_dominates_equal PASSED", (74, 222, 128)),
-        ("tests/unit/test_pareto.py::test_non_dominated_sort_simple PASSED", (74, 222, 128)),
-        ("tests/unit/test_pareto.py::test_non_dominated_sort_single_front PASSED", (74, 222, 128)),
-        ("tests/unit/test_pareto.py::test_non_dominated_sort_fully_dominated PASSED", (74, 222, 128)),
-        ("tests/unit/test_pareto.py::test_crowding_distance_two_points PASSED", (74, 222, 128)),
-        ("tests/unit/test_pareto.py::test_crowding_distance_three_points PASSED", (74, 222, 128)),
-        ("tests/unit/test_pareto.py::test_non_dominated_sort_random PASSED", (74, 222, 128)),
-        ("tests/unit/test_schema.py::test_material_record_roundtrip PASSED", (74, 222, 128)),
-        ("tests/unit/test_schema.py::test_property_set_optional_fields PASSED", (74, 222, 128)),
-        ("tests/unit/test_schema.py::test_prediction_with_ci PASSED", (74, 222, 128)),
-        ("tests/unit/test_schema.py::test_material_card PASSED", (74, 222, 128)),
-        ("", (255, 255, 255)),
-        ("27 passed in 0.35s", (74, 222, 128)),
     ]
+
+    for module, tests in test_modules:
+        for test in tests[:2]:
+            lines.append((f"tests/unit/{module}.py::{test} PASSED", (74, 222, 128)))
+
+    lines.append(("...", (150, 150, 150)))
+    lines.append(("", (255, 255, 255)))
+    lines.append(("68 passed in 60.10s", (74, 222, 128)))
 
     y = 40
     for text, color in lines:
         draw.text((60, y), text, fill=color, font=font_small)
-        y += 28
+        y += 26
 
     img.save(frame_path)
 
@@ -234,6 +220,20 @@ def add_annotation(screenshot_path: Path, annotation: str, output_path: Path) ->
     img = img.convert("RGBA")
     img = Image.alpha_composite(img, overlay)
     img.convert("RGB").save(output_path)
+
+
+def click_tab(page, tab_name: str, scroll_y: int = 300) -> None:
+    page.evaluate(f"""() => {{
+        const tabs = document.querySelectorAll('[data-baseweb="tab"]');
+        for (const t of tabs) {{
+            if (t.textContent.includes('{tab_name}')) {{
+                t.click();
+                break;
+            }}
+        }}
+        window.scrollTo(0, {scroll_y});
+    }}""")
+    time.sleep(3)
 
 
 def run_demo() -> None:
@@ -291,61 +291,17 @@ def run_demo() -> None:
                 page.evaluate("window.scrollTo(0, 1200)")
                 time.sleep(2)
 
+            elif action == "click_triage_tab":
+                click_tab(page, "Triage")
+
             elif action == "click_explore_tab":
-                page.evaluate("""() => {
-                    const tabs = document.querySelectorAll('[data-baseweb="tab"]');
-                    for (const t of tabs) {
-                        if (t.textContent.includes('Explore')) {
-                            t.click();
-                            break;
-                        }
-                    }
-                    window.scrollTo(0, 400);
-                }""")
-                time.sleep(3)
+                click_tab(page, "Explore", scroll_y=150)
 
-            elif action == "scroll_explore_charts":
-                page.evaluate("window.scrollTo(0, 900)")
-                time.sleep(2)
+            elif action == "click_reliability_tab":
+                click_tab(page, "Reliability")
 
-            elif action == "click_analysis_tab":
-                page.evaluate("""() => {
-                    const tabs = document.querySelectorAll('[data-baseweb="tab"]');
-                    for (const t of tabs) {
-                        if (t.textContent.includes('Analysis')) {
-                            t.click();
-                            break;
-                        }
-                    }
-                    window.scrollTo(0, 400);
-                }""")
-                time.sleep(3)
-
-            elif action == "switch_to_led":
-                page.evaluate("""() => {
-                    const tabs = document.querySelectorAll('[data-baseweb="tab"]');
-                    for (const t of tabs) {
-                        if (t.textContent.includes('Recommend')) {
-                            t.click();
-                            break;
-                        }
-                    }
-                    window.scrollTo(0, 0);
-                }""")
-                time.sleep(2)
-                page.evaluate("""() => {
-                    const selects = document.querySelectorAll(
-                        '[data-testid="stSelectbox"]'
-                    );
-                    if (selects.length > 0) selects[0].click();
-                }""")
-                time.sleep(1)
-                led = page.query_selector('li:has-text("LED")')
-                if led:
-                    led.click()
-                    time.sleep(3)
-                page.evaluate("window.scrollTo(0, 600)")
-                time.sleep(2)
+            elif action == "click_dft_tab":
+                click_tab(page, "DFT Queue")
 
             time.sleep(1)
 

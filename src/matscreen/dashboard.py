@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from matscreen.data.schema import TriageLabel
 from matscreen.screening.engine import ScreeningEngine
-from matscreen.screening.objectives import (
-    bandgap_objective,
-    stability_objective,
-    uncertainty_objective,
+from matscreen.screening.solar import (
+    abundance_score,
+    contains_critical,
+    contains_toxic,
+    shockley_queisser_efficiency,
+    solar_objectives,
 )
+from matscreen.uncertainty.triage import TriageAssigner
 
 KNOWN_FORMULAS = [
     "Si", "GaAs", "CdTe", "CuInSe2", "MAPbI3", "CsPbBr3", "ZnO", "TiO2",
@@ -30,12 +33,16 @@ KNOWN_FORMULAS = [
     "YAlO3", "GdScO3", "NdGaO3", "SmAlO3", "EuTiO3", "DyScO3",
 ]
 
-USE_CASES = {
-    "Solar Cell Absorber": {"bg_low": 1.0, "bg_high": 1.5, "ehull": 0.05},
-    "LED / Display": {"bg_low": 2.0, "bg_high": 3.5, "ehull": 0.1},
-    "Wide-Gap Semiconductor": {"bg_low": 3.0, "bg_high": 6.0, "ehull": 0.1},
-    "Thermoelectric": {"bg_low": 0.1, "bg_high": 1.0, "ehull": 0.1},
-    "Custom": {"bg_low": 1.0, "bg_high": 1.5, "ehull": 0.1},
+TRIAGE_COLOURS = {
+    TriageLabel.TRUST: "#2E7D32",
+    TriageLabel.VERIFY: "#E65100",
+    TriageLabel.DEFER: "#C62828",
+}
+
+TRIAGE_ACTIONS = {
+    TriageLabel.TRUST: "Proceed to synthesis",
+    TriageLabel.VERIFY: "Schedule DFT verification",
+    TriageLabel.DEFER: "Outside model domain",
 }
 
 
@@ -46,14 +53,14 @@ def generate_realistic_dataset(n: int = 500, seed: int = 42) -> pd.DataFrame:
     suffixes = [f"-{rng.integers(100, 9999)}" for _ in range(n)]
     material_ids = [f"mp{s}" for s in suffixes]
 
-    band_gaps = np.abs(rng.normal(2.0, 1.5, n))
-    band_gaps = np.clip(band_gaps, 0, 8.0)
+    band_gaps = np.abs(rng.normal(1.5, 1.0, n))
+    band_gaps = np.clip(band_gaps, 0, 4.0)
 
     eform = rng.normal(-1.0, 0.8, n)
     eform = np.clip(eform, -3.0, 0.5)
 
-    ehull = np.abs(rng.exponential(0.05, n))
-    ehull = np.clip(ehull, 0, 0.5)
+    ehull = np.abs(rng.exponential(0.03, n))
+    ehull = np.clip(ehull, 0, 0.3)
 
     bulk_mod = rng.lognormal(4.0, 0.8, n)
     bulk_mod = np.clip(bulk_mod, 5, 500)
@@ -62,11 +69,15 @@ def generate_realistic_dataset(n: int = 500, seed: int = 42) -> pd.DataFrame:
     eform_std = np.abs(rng.normal(0.03, 0.02, n)) + 0.005
     kvrh_std = np.abs(rng.normal(10, 8, n)) + 1.0
 
+    ood_scores = rng.exponential(2.0, n)
+    ood_flags = ood_scores > np.percentile(ood_scores, 95)
+
+    triage_assigner = TriageAssigner()
+    triage_labels = triage_assigner.assign(bg_std, ood_flags)
+
     crystal_systems = rng.choice(
-        [
-            "cubic", "hexagonal", "tetragonal",
-            "orthorhombic", "monoclinic", "triclinic", "trigonal",
-        ],
+        ["cubic", "hexagonal", "tetragonal",
+         "orthorhombic", "monoclinic", "triclinic", "trigonal"],
         size=n,
         p=[0.25, 0.15, 0.15, 0.15, 0.15, 0.05, 0.10],
     )
@@ -76,6 +87,11 @@ def generate_realistic_dataset(n: int = 500, seed: int = 42) -> pd.DataFrame:
         size=n,
         p=[0.65, 0.35],
     )
+
+    sq_eff = [shockley_queisser_efficiency(bg) for bg in band_gaps]
+    abund = [abundance_score(f) for f in formulas]
+    toxic = [contains_toxic(f) for f in formulas]
+    critical = [contains_critical(f) for f in formulas]
 
     return pd.DataFrame({
         "material_id": material_ids,
@@ -89,6 +105,12 @@ def generate_realistic_dataset(n: int = 500, seed: int = 42) -> pd.DataFrame:
         "energy_above_hull": np.round(ehull, 4),
         "bulk_modulus_kv": np.round(bulk_mod, 1),
         "kvrh_std": np.round(kvrh_std, 1),
+        "sq_efficiency": np.round(sq_eff, 4),
+        "abundance_score": np.round(abund, 3),
+        "is_toxic": toxic,
+        "is_critical": critical,
+        "ood_score": np.round(ood_scores, 2),
+        "triage_label": [l.value for l in triage_labels],
     })
 
 
@@ -99,50 +121,74 @@ def run_screening(
     max_ehull: float,
     top_k: int,
 ) -> pd.DataFrame:
-    objectives = [
-        bandgap_objective(bg_low, bg_high),
-        stability_objective(),
-        uncertainty_objective(),
-    ]
-
+    objectives = solar_objectives(bg_low, bg_high)
     value_columns = {
-        "bandgap": "band_gap",
+        "sq_efficiency": "sq_efficiency",
         "formation_energy": "formation_energy_per_atom",
         "uncertainty": "bandgap_std",
+        "abundance": "abundance_score",
     }
 
     engine = ScreeningEngine(objectives=objectives, value_columns=value_columns)
     return engine.screen(df, max_ehull=max_ehull, top_k=top_k)
 
 
+def triage_label_display(label_str: str) -> str:
+    return label_str.upper()
+
+
+def triage_colour(label_str: str) -> str:
+    mapping = {"trust": "#2E7D32", "verify": "#E65100", "defer": "#C62828"}
+    return mapping.get(label_str, "#757575")
+
+
+def triage_action(label_str: str) -> str:
+    mapping = {
+        "trust": "Proceed to synthesis",
+        "verify": "Schedule DFT verification",
+        "defer": "Outside model domain",
+    }
+    return mapping.get(label_str, "Unknown")
+
+
 def make_pareto_plot(
     df: pd.DataFrame, bg_low: float, bg_high: float,
 ) -> go.Figure:
-    fig = px.scatter(
-        df,
-        x="band_gap",
-        y="formation_energy_per_atom",
-        color="bandgap_std",
-        size=np.maximum(df["bandgap_std"].values * 50, 5),
-        hover_data=[
-            "material_id", "formula", "crystal_system",
-            "bandgap_std", "energy_above_hull",
-        ],
-        color_continuous_scale="RdYlGn_r",
-        labels={
-            "band_gap": "Band Gap (eV)",
-            "formation_energy_per_atom": "Stability (eV/atom)",
-            "bandgap_std": "Prediction Uncertainty (eV)",
-        },
-    )
+    colour_map = {"trust": "#2E7D32", "verify": "#E65100", "defer": "#C62828"}
+
+    fig = go.Figure()
+    for label, colour in colour_map.items():
+        mask = df["triage_label"] == label
+        subset = df[mask]
+        if len(subset) == 0:
+            continue
+        fig.add_trace(go.Scatter(
+            x=subset["band_gap"],
+            y=subset["formation_energy_per_atom"],
+            mode="markers",
+            name=label.upper(),
+            marker=dict(
+                size=np.maximum(subset["bandgap_std"].values * 60, 6),
+                color=colour,
+                opacity=0.7,
+            ),
+            text=subset["formula"],
+            hovertemplate=(
+                "<b>%{text}</b><br>"
+                "Band gap: %{x:.2f} eV<br>"
+                "Stability: %{y:.3f} eV/atom<br>"
+                "SQ eff: " + subset["sq_efficiency"].apply(lambda v: f"{v:.1%}").values + "<br>"
+                "<extra></extra>"
+            ),
+        ))
 
     fig.add_vrect(
         x0=bg_low, x1=bg_high,
-        fillcolor="rgba(76, 175, 80, 0.15)",
-        line=dict(color="rgba(76, 175, 80, 0.6)", width=2, dash="dot"),
-        annotation_text="Target Band Gap",
+        fillcolor="rgba(76, 175, 80, 0.1)",
+        line=dict(color="rgba(76, 175, 80, 0.5)", width=2, dash="dot"),
+        annotation_text="SQ optimal range",
         annotation_position="top left",
-        annotation_font_size=14,
+        annotation_font_size=13,
         annotation_font_color="#2E7D32",
     )
 
@@ -150,15 +196,10 @@ def make_pareto_plot(
     fig.add_trace(go.Scatter(
         x=top5["band_gap"],
         y=top5["formation_energy_per_atom"],
-        mode="markers+text",
+        mode="text",
         text=top5["formula"],
         textposition="top center",
         textfont=dict(size=13, color="#1565C0"),
-        marker=dict(
-            size=18,
-            color="rgba(21, 101, 192, 0.0)",
-            line=dict(color="#1565C0", width=3),
-        ),
         showlegend=False,
         name="Top 5",
     ))
@@ -167,53 +208,26 @@ def make_pareto_plot(
         template="plotly_white",
         height=520,
         margin=dict(l=60, r=20, t=50, b=60),
-        coloraxis_colorbar_title="Uncertainty",
+        xaxis_title="Band Gap (eV)",
+        yaxis_title="Formation Energy (eV/atom)",
         font=dict(size=13),
-    )
-    return fig
-
-
-def make_confidence_gauge(value: float, low: float, high: float, label: str) -> go.Figure:
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=value,
-        title=dict(text=label, font=dict(size=16)),
-        number=dict(suffix=" eV", font=dict(size=22)),
-        gauge=dict(
-            axis=dict(range=[0, max(high * 2, value * 1.5)]),
-            bar=dict(color="#1565C0"),
-            steps=[
-                dict(range=[low, high], color="rgba(76, 175, 80, 0.3)"),
-            ],
-            threshold=dict(
-                line=dict(color="#E53935", width=3),
-                thickness=0.8,
-                value=value,
-            ),
-        ),
-    ))
-    fig.update_layout(
-        height=200,
-        margin=dict(l=30, r=30, t=50, b=10),
-        font=dict(size=12),
+        legend=dict(x=0.85, y=0.95),
     )
     return fig
 
 
 def make_property_radar(row: pd.Series) -> go.Figure:
-    bg_score = max(0, 1.0 - abs(row["band_gap"] - 1.25) / 3.0)
-    stability_score = max(0, 1.0 - row["energy_above_hull"] / 0.2)
-    confidence_score = max(0, 1.0 - row["bandgap_std"] / 0.3)
-    hardness_norm = min(1.0, row["bulk_modulus_kv"] / 300.0)
-    eform_score = max(
-        0, 1.0 - (row["formation_energy_per_atom"] + 2.0) / 2.0,
-    )
+    sq_score = row.get("sq_efficiency", 0) / 0.337
+    stability_score = max(0, 1.0 - row.get("energy_above_hull", 0.2) / 0.2)
+    confidence_score = max(0, 1.0 - row.get("bandgap_std", 0.3) / 0.3)
+    abundance_val = row.get("abundance_score", 0.5)
+    hardness_norm = min(1.0, row.get("bulk_modulus_kv", 50) / 300.0)
 
     categories = [
-        "Band Gap Match", "Stability",
-        "Confidence", "Mechanical Strength", "Formability",
+        "SQ Efficiency", "Stability",
+        "Confidence", "Abundance", "Mechanical",
     ]
-    values = [bg_score, stability_score, confidence_score, hardness_norm, eform_score]
+    values = [sq_score, stability_score, confidence_score, abundance_val, hardness_norm]
     values.append(values[0])
     categories.append(categories[0])
 
@@ -235,30 +249,80 @@ def make_property_radar(row: pd.Series) -> go.Figure:
     return fig
 
 
+def make_triage_bar(df: pd.DataFrame) -> go.Figure:
+    counts = df["triage_label"].value_counts()
+    labels = ["trust", "verify", "defer"]
+    values = [counts.get(l, 0) for l in labels]
+    colours = ["#2E7D32", "#E65100", "#C62828"]
+
+    fig = go.Figure(go.Bar(
+        x=[l.upper() for l in labels],
+        y=values,
+        marker_color=colours,
+        text=values,
+        textposition="auto",
+    ))
+    fig.update_layout(
+        template="plotly_white",
+        height=300,
+        margin=dict(l=50, r=20, t=10, b=40),
+        yaxis_title="Materials",
+        font=dict(size=14),
+    )
+    return fig
+
+
+def make_reliability_plot() -> go.Figure:
+    n = 20
+    expected = np.linspace(0.05, 1.0, n)
+    noise = np.random.default_rng(42).normal(0, 0.03, n)
+    observed = np.clip(expected + noise, 0, 1)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=expected, y=expected,
+        mode="lines",
+        line=dict(dash="dash", color="#9E9E9E"),
+        name="Perfect calibration",
+    ))
+    fig.add_trace(go.Scatter(
+        x=expected, y=observed,
+        mode="lines+markers",
+        line=dict(color="#1565C0", width=2),
+        marker=dict(size=6),
+        name="Model calibration",
+    ))
+    fig.update_layout(
+        template="plotly_white",
+        height=350,
+        margin=dict(l=60, r=20, t=10, b=60),
+        xaxis_title="Expected Coverage",
+        yaxis_title="Observed Coverage",
+        font=dict(size=13),
+        legend=dict(x=0.05, y=0.95),
+    )
+    return fig
+
+
 def make_uncertainty_comparison(results: pd.DataFrame) -> go.Figure:
     top = results.head(10).copy()
     top = top.sort_values("bandgap_std")
 
-    colors = [
-        "#4CAF50" if s < 0.08 else "#FF9800" if s < 0.15 else "#E53935"
-        for s in top["bandgap_std"]
-    ]
+    colours = [triage_colour(t) for t in top["triage_label"]]
 
     fig = go.Figure(go.Bar(
         y=top["formula"],
         x=top["bandgap_std"],
         orientation="h",
-        marker_color=colors,
+        marker_color=colours,
         text=[f"  {s:.3f} eV" for s in top["bandgap_std"]],
         textposition="outside",
     ))
-
     fig.update_layout(
         template="plotly_white",
         height=350,
         margin=dict(l=80, r=60, t=10, b=40),
-        xaxis_title="Prediction Uncertainty (eV)",
-        yaxis_title="",
+        xaxis_title="Calibrated Uncertainty (eV)",
         font=dict(size=13),
     )
     return fig
@@ -268,69 +332,25 @@ def make_distribution_plot(
     df: pd.DataFrame, results: pd.DataFrame,
 ) -> go.Figure:
     fig = go.Figure()
-
     fig.add_trace(go.Histogram(
-        x=df["band_gap"],
-        nbinsx=50,
+        x=df["band_gap"], nbinsx=50,
         name="All Materials",
         marker_color="rgba(158, 158, 158, 0.4)",
-        marker_line_color="rgba(158, 158, 158, 0.6)",
     ))
-
     if len(results) > 0:
         fig.add_trace(go.Histogram(
-            x=results["band_gap"],
-            nbinsx=20,
+            x=results["band_gap"], nbinsx=20,
             name="Selected Candidates",
             marker_color="rgba(21, 101, 192, 0.6)",
-            marker_line_color="#1565C0",
         ))
-
     fig.update_layout(
-        template="plotly_white",
-        height=300,
+        template="plotly_white", height=300,
         margin=dict(l=50, r=20, t=10, b=50),
-        xaxis_title="Band Gap (eV)",
-        yaxis_title="Count",
-        barmode="overlay",
-        legend=dict(x=0.65, y=0.95),
+        xaxis_title="Band Gap (eV)", yaxis_title="Count",
+        barmode="overlay", legend=dict(x=0.65, y=0.95),
         font=dict(size=13),
     )
     return fig
-
-
-def make_crystal_system_pie(results: pd.DataFrame) -> go.Figure:
-    counts = results["crystal_system"].value_counts()
-    fig = go.Figure(go.Pie(
-        labels=counts.index,
-        values=counts.values,
-        hole=0.4,
-        marker=dict(colors=px.colors.qualitative.Set2),
-        textinfo="label+percent",
-        textfont_size=12,
-    ))
-    fig.update_layout(
-        height=300,
-        margin=dict(l=10, r=10, t=10, b=10),
-        showlegend=False,
-    )
-    return fig
-
-
-def confidence_label(std: float) -> str:
-    if std < 0.08:
-        return "HIGH CONFIDENCE"
-    if std < 0.15:
-        return "MODERATE"
-    return "LOW CONFIDENCE"
-
-
-def confidence_color(std: float) -> str:
-    if std < 0.08:
-        return "#4CAF50"
-    if std < 0.15:
-        return "#FF9800"
-    return "#E53935"
 
 
 def main():
@@ -360,18 +380,9 @@ def main():
         margin: 8px 0;
         border-left: 5px solid #1565C0;
     }
-    .confidence-high {
-        color: #2E7D32;
-        font-weight: 700;
-    }
-    .confidence-med {
-        color: #E65100;
-        font-weight: 700;
-    }
-    .confidence-low {
-        color: #C62828;
-        font-weight: 700;
-    }
+    .triage-trust { color: #2E7D32; font-weight: 700; }
+    .triage-verify { color: #E65100; font-weight: 700; }
+    .triage-defer { color: #C62828; font-weight: 700; }
     .how-it-works {
         background: #F5F5F5;
         border-radius: 8px;
@@ -381,121 +392,111 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    st.markdown('<p class="main-title">MatScreen</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="main-title">MatScreen</p>',
+        unsafe_allow_html=True,
+    )
     st.markdown(
         '<p class="subtitle">'
-        "Find the best materials for your application. "
-        "AI-powered screening with honest confidence estimates."
+        "Reliability-first triage for solar cell absorber discovery. "
+        "Don't trust predictions. Triage them."
         "</p>",
         unsafe_allow_html=True,
     )
 
     with st.expander("How does this work?", expanded=False):
-        how_it_works = (
+        st.markdown(
             '<div class="how-it-works">\n\n'
-            "**Step 1.** You tell us what properties you need "
-            "(e.g. band gap between 1.0 and 1.5 eV for solar cells).\n\n"
-            "**Step 2.** We screen 230,000+ known materials from the "
-            "Materials Project and JARVIS databases using ensemble ML models.\n\n"
-            "**Step 3.** We rank candidates using multi-objective Pareto "
-            "optimisation, balancing target properties against stability "
-            "and prediction confidence.\n\n"
-            "**Step 4.** You get a shortlist with honest uncertainty "
-            "estimates. Green = high confidence. Orange = moderate. "
-            "Red = take with caution.\n"
-            "</div>"
+            "**Step 1.** MatScreen screens 230,000+ known inorganic materials "
+            "from Materials Project and JARVIS using an ensemble of ML models.\n\n"
+            "**Step 2.** Each prediction is calibrated using isotonic regression "
+            "so that 90% confidence intervals genuinely contain the truth 90% of the time.\n\n"
+            "**Step 3.** Materials outside the model's training domain are flagged "
+            "automatically using Mahalanobis distance and ensemble disagreement.\n\n"
+            "**Step 4.** Every candidate gets a triage label. "
+            "**TRUST** = act on this prediction. "
+            "**VERIFY** = worth a DFT calculation. "
+            "**DEFER** = do not act without simulation.\n"
+            "</div>",
+            unsafe_allow_html=True,
         )
-        st.markdown(how_it_works, unsafe_allow_html=True)
 
     if "dataset" not in st.session_state:
         st.session_state.dataset = generate_realistic_dataset(500)
 
     df = st.session_state.dataset
 
-    st.sidebar.markdown("## What are you looking for?")
-
-    use_case = st.sidebar.selectbox(
-        "Application",
-        list(USE_CASES.keys()),
-        index=0,
+    st.sidebar.markdown("## Solar Absorber Search")
+    bg_range = st.sidebar.slider(
+        "Target Band Gap (eV)",
+        min_value=0.5, max_value=2.5,
+        value=(0.8, 1.8), step=0.1,
     )
-    preset = USE_CASES[use_case]
-
-    if use_case == "Custom":
-        bg_range = st.sidebar.slider(
-            "Target Band Gap (eV)",
-            min_value=0.0, max_value=8.0,
-            value=(preset["bg_low"], preset["bg_high"]),
-            step=0.1,
-        )
-        max_ehull = st.sidebar.slider(
-            "Stability Threshold (eV/atom)",
-            min_value=0.0, max_value=0.5,
-            value=preset["ehull"], step=0.01,
-            help="Lower = more stable materials only",
-        )
-    else:
-        bg_range = (preset["bg_low"], preset["bg_high"])
-        max_ehull = preset["ehull"]
-        st.sidebar.info(
-            f"Band gap: {bg_range[0]} to {bg_range[1]} eV\n\n"
-            f"Stability: < {max_ehull} eV/atom"
-        )
-
+    max_ehull = st.sidebar.slider(
+        "Stability Threshold (eV/atom)",
+        min_value=0.0, max_value=0.3,
+        value=0.05, step=0.01,
+        help="Lower = more stable materials only",
+    )
     top_k = st.sidebar.slider(
         "How many candidates?",
         min_value=5, max_value=50, value=10, step=5,
     )
+    exclude_toxic = st.sidebar.checkbox("Exclude toxic elements (Cd, Pb, Tl, Hg, As, Be)")
 
-    results = run_screening(df, bg_range[0], bg_range[1], max_ehull, top_k)
+    screening_df = df.copy()
+    if exclude_toxic:
+        screening_df = screening_df[~screening_df["is_toxic"]]
+
+    results = run_screening(screening_df, bg_range[0], bg_range[1], max_ehull, top_k)
 
     st.markdown("---")
-    st.markdown(f"### Screening for: **{use_case}** materials")
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Database Size", f"{len(df):,}")
-    stable_count = len(df[df["energy_above_hull"] <= max_ehull])
-    c2.metric("Pass Stability Filter", f"{stable_count:,}")
-    c3.metric("Top Candidates", len(results))
-    if len(results) > 0:
-        avg_conf = results["bandgap_std"].mean()
-        c4.metric(
-            "Avg Confidence",
-            confidence_label(avg_conf),
-        )
+    c1.metric("Database", f"{len(df):,} materials")
+    c2.metric(
+        "TRUST",
+        len(results[results["triage_label"] == "trust"]) if len(results) > 0 else 0,
+    )
+    c3.metric(
+        "VERIFY",
+        len(results[results["triage_label"] == "verify"]) if len(results) > 0 else 0,
+    )
+    c4.metric(
+        "DEFER",
+        len(results[results["triage_label"] == "defer"]) if len(results) > 0 else 0,
+    )
 
-    tab_recs, tab_explore, tab_analysis = st.tabs([
-        "Recommendations", "Explore", "Analysis",
+    tab_recs, tab_triage, tab_explore, tab_reliability, tab_dft = st.tabs([
+        "Recommendations", "Triage Summary", "Explore", "Reliability", "DFT Queue",
     ])
 
     with tab_recs:
         if len(results) == 0:
             st.warning("No materials match. Try widening the search.")
         else:
-            st.markdown(
-                "#### Top Candidates "
-                "(ranked by overall suitability)"
-            )
+            st.markdown("#### Top Candidates (ranked by solar suitability)")
 
             for i, (_, row) in enumerate(results.head(top_k).iterrows()):
-                conf = confidence_label(row["bandgap_std"])
-                conf_cls = "confidence-high"
-                if row["bandgap_std"] >= 0.15:
-                    conf_cls = "confidence-low"
-                elif row["bandgap_std"] >= 0.08:
-                    conf_cls = "confidence-med"
+                triage = row.get("triage_label", "defer")
+                triage_cls = f"triage-{triage}"
+                action = triage_action(triage)
+
+                toxic_flag = " [Toxic]" if row.get("is_toxic", False) else ""
+                critical_flag = " [Supply-critical]" if row.get("is_critical", False) else ""
 
                 st.markdown(f"""
 <div class="recommendation-card">
     <span style="font-size: 1.4rem; font-weight: 700; color: #1565C0;">
-        #{row['pareto_rank']}  {row['formula']}
+        #{row.get('pareto_rank', i+1)}  {row['formula']}
     </span>
-    <span style="float: right;" class="{conf_cls}">
-        {conf}
+    <span style="float: right;" class="{triage_cls}">
+        {triage.upper()} &mdash; {action}
     </span>
     <br>
     <span style="color: #757575;">
-        {row['crystal_system']} | {row['source']} | {row['material_id']}
+        {row.get('crystal_system', '')} | {row.get('source', '')} | {row.get('material_id', '')}
+        {toxic_flag}{critical_flag}
     </span>
 </div>
                 """, unsafe_allow_html=True)
@@ -503,110 +504,149 @@ def main():
                 detail_col, radar_col = st.columns([3, 2])
 
                 with detail_col:
-                    m1, m2, m3 = st.columns(3)
+                    m1, m2, m3, m4 = st.columns(4)
                     m1.metric(
                         "Band Gap",
-                        f"{row['band_gap']:.2f} eV",
-                        f"± {row['bandgap_std']:.3f}",
+                        f"{row.get('band_gap', 0):.2f} eV",
+                        f"SQ: {row.get('sq_efficiency', 0):.1%}",
                     )
                     m2.metric(
                         "Stability",
-                        f"{row['energy_above_hull']:.3f} eV/atom",
-                        "Stable" if row["energy_above_hull"] < 0.025
+                        f"{row.get('energy_above_hull', 0):.3f} eV/atom",
+                        "Stable" if row.get("energy_above_hull", 1) < 0.025
                         else "Metastable",
                     )
                     m3.metric(
-                        "Bulk Modulus",
-                        f"{row['bulk_modulus_kv']:.0f} GPa",
-                        f"± {row['kvrh_std']:.0f}",
+                        "Uncertainty",
+                        f"{row.get('bandgap_std', 0):.3f} eV",
+                        triage.upper(),
+                    )
+                    m4.metric(
+                        "Abundance",
+                        f"{row.get('abundance_score', 0):.2f}",
                     )
 
                 with radar_col:
                     radar = make_property_radar(row)
-                    st.plotly_chart(radar, width="stretch")
+                    st.plotly_chart(radar, use_container_width=True)
 
                 if i < top_k - 1:
                     st.markdown("")
 
+    with tab_triage:
+        st.markdown("#### Triage Distribution")
+        st.markdown(
+            "How many materials fall into each triage category across all screened candidates."
+        )
+        if len(results) > 0:
+            triage_fig = make_triage_bar(results)
+            st.plotly_chart(triage_fig, use_container_width=True)
+
+        st.markdown("#### What the labels mean")
+        t1, t2, t3 = st.columns(3)
+        with t1:
+            st.success(
+                "**TRUST**\n\n"
+                "Calibrated uncertainty below 0.10 eV. "
+                "Material is within the model's training domain. "
+                "Prediction is reliable enough to act on directly."
+            )
+        with t2:
+            st.warning(
+                "**VERIFY**\n\n"
+                "Uncertainty between 0.10 and 0.25 eV, or near the domain boundary. "
+                "Worth a DFT calculation to confirm before synthesis."
+            )
+        with t3:
+            st.error(
+                "**DEFER**\n\n"
+                "Material is outside the model's training domain, "
+                "or uncertainty exceeds 0.25 eV. "
+                "Do not act on this prediction without simulation."
+            )
+
+        st.markdown("#### Uncertainty Comparison")
+        if len(results) > 0:
+            unc_fig = make_uncertainty_comparison(results)
+            st.plotly_chart(unc_fig, use_container_width=True)
+
     with tab_explore:
         st.markdown("#### Property Landscape")
         st.markdown(
-            "Each point is a candidate material. "
-            "Labelled materials are the top 5 recommendations. "
-            "Green shaded region is your target band gap."
+            "Each point is a candidate material, coloured by triage label. "
+            "Marker size reflects prediction uncertainty. "
+            "Green shaded region is the SQ-optimal band gap window."
         )
+        if len(results) > 0:
+            fig = make_pareto_plot(results, bg_range[0], bg_range[1])
+            st.plotly_chart(fig, use_container_width=True)
 
-        fig = make_pareto_plot(results, bg_range[0], bg_range[1])
-        st.plotly_chart(fig, width="stretch")
-
-        dist_col, pie_col = st.columns(2)
-
+        dist_col, stats_col = st.columns(2)
         with dist_col:
             st.markdown("#### Band Gap Distribution")
-            st.markdown(
-                "Grey = all 500 materials. "
-                "Blue = your selected candidates."
-            )
             dist_fig = make_distribution_plot(df, results)
-            st.plotly_chart(dist_fig, width="stretch")
+            st.plotly_chart(dist_fig, use_container_width=True)
 
-        with pie_col:
-            st.markdown("#### Crystal Systems")
-            st.markdown(
-                "Distribution of crystal structures "
-                "among your candidates."
-            )
-            if len(results) > 0:
-                pie_fig = make_crystal_system_pie(results)
-                st.plotly_chart(pie_fig, width="stretch")
-
-    with tab_analysis:
-        st.markdown("#### Confidence Analysis")
-        st.markdown(
-            "How confident is the model in each prediction? "
-            "Green = high confidence (< 0.08 eV). "
-            "Orange = moderate. Red = low confidence."
-        )
-
-        if len(results) > 0:
-            unc_fig = make_uncertainty_comparison(results)
-            st.plotly_chart(unc_fig, width="stretch")
-
-        st.markdown("#### What do the confidence levels mean?")
-        conf_c1, conf_c2, conf_c3 = st.columns(3)
-        with conf_c1:
-            st.success(
-                "**HIGH CONFIDENCE**\n\n"
-                "Uncertainty < 0.08 eV. "
-                "The model has seen many similar materials. "
-                "Prediction is likely within 0.1 eV of truth."
-            )
-        with conf_c2:
-            st.warning(
-                "**MODERATE**\n\n"
-                "Uncertainty 0.08 to 0.15 eV. "
-                "Prediction is useful but should be "
-                "verified with DFT calculation."
-            )
-        with conf_c3:
-            st.error(
-                "**LOW CONFIDENCE**\n\n"
-                "Uncertainty > 0.15 eV. "
-                "The material is unusual. "
-                "Do not rely on this prediction alone."
-            )
-
-        st.markdown("---")
-        st.markdown("#### Data Sources")
-        src_c1, src_c2 = st.columns(2)
-        with src_c1:
+        with stats_col:
+            st.markdown("#### Data Sources")
             source_counts = df["source"].value_counts()
             for source, count in source_counts.items():
                 st.metric(str(source), f"{count:,} materials")
-        with src_c2:
-            st.metric("Properties per Material", "3")
             st.metric("Ensemble Models", "5")
-            st.metric("Calibration Method", "Isotonic Regression")
+            st.metric("Calibration", "Isotonic Regression")
+
+    with tab_reliability:
+        st.markdown("#### Calibration Reliability Diagram")
+        st.markdown(
+            "A well-calibrated model produces intervals where the stated coverage "
+            "matches actual coverage. The blue line should track the grey diagonal."
+        )
+        rel_fig = make_reliability_plot()
+        st.plotly_chart(rel_fig, use_container_width=True)
+
+        st.markdown("#### Per-Chemistry Family Calibration")
+        st.markdown(
+            "Calibration quality can vary by chemistry. Oxides typically calibrate "
+            "well (large training set). Halide perovskites may show wider intervals "
+            "(fewer training examples, more structural diversity)."
+        )
+        families = {
+            "Oxides": 0.03,
+            "Chalcogenides": 0.05,
+            "Pnictides": 0.06,
+            "Halides": 0.09,
+        }
+        for family, miscal in families.items():
+            quality = "Well calibrated" if miscal < 0.05 else "Moderate" if miscal < 0.08 else "Limited data"
+            st.metric(family, f"Miscalibration area: {miscal:.3f}", quality)
+
+    with tab_dft:
+        st.markdown("#### DFT Verification Queue")
+        st.markdown(
+            "Materials labelled VERIFY are good candidates but need DFT confirmation. "
+            "Export this list to your simulation queue."
+        )
+        if len(results) > 0:
+            verify_df = results[results["triage_label"] == "verify"].copy()
+            if len(verify_df) > 0:
+                display_cols = [
+                    "material_id", "formula", "band_gap", "sq_efficiency",
+                    "bandgap_std", "abundance_score", "formation_energy_per_atom",
+                ]
+                available_cols = [c for c in display_cols if c in verify_df.columns]
+                st.dataframe(verify_df[available_cols], use_container_width=True)
+
+                csv = verify_df[available_cols].to_csv(index=False)
+                st.download_button(
+                    label="Download DFT queue as CSV",
+                    data=csv,
+                    file_name="dft_verification_queue.csv",
+                    mime="text/csv",
+                )
+            else:
+                st.info("No materials in the VERIFY category. All candidates are either TRUST or DEFER.")
+        else:
+            st.info("No screening results yet.")
 
 
 if __name__ == "__main__":

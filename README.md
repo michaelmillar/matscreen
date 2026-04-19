@@ -64,7 +64,7 @@ The `--export-dft-queue` flag writes VERIFY materials to `results/dft_queue.csv`
 
 ```mermaid
 graph LR
-    A[Materials Project\n154k materials] --> D[Data Layer]
+    A[Materials Project\n170k materials] --> D[Data Layer]
     B[JARVIS-DFT\n80k materials] --> D
     D --> E[Magpie Composition\nFeatures]
     E --> F[XGBoost Ensemble\n5 models]
